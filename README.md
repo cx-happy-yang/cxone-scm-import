@@ -3,15 +3,14 @@
 This python script aims to import all GitHub repos from one GitHub Organization into CxOne.
 
 ## Prerequisites for the script, you need to set the following environment variables
-    a. GITHUB_ORG: your GitHub organization name, which is case-sensitive
-    b. CXONE_GITHUB_AUTH_CODE: your GitHub auth code
-    c. CXONE_SCANNERS: comma separated value, for example: sast,sca,apisec,kics
-    d. CXONE_ACCESS_CONTROL_URL: Your cxone IAM url: https://sng.iam.checkmarx.net/
-    e. CXONE_SERVER: Your cxone server url, for example: https://sng.ast.checkmarx.net/
-    f. CXONE_TENANT_NAME: Your cxone tenant name
-    g. CXONE_GRANT_TYPE: refresh_token
-    h. CXONE_REFRESH_TOKEN: Your CxOne API Key
-    i. GITHUB_TOKEN: github personal access token
+    * GITHUB_ORG: your GitHub organization name, which is case-sensitive
+    * CXONE_GITHUB_AUTH_CODE: your GitHub auth code
+    * CXONE_ACCESS_CONTROL_URL: Your cxone IAM url: https://sng.iam.checkmarx.net/
+    * CXONE_SERVER: Your cxone server url, for example: https://sng.ast.checkmarx.net/
+    * CXONE_TENANT_NAME: Your cxone tenant name
+    * CXONE_GRANT_TYPE: refresh_token
+    * CXONE_REFRESH_TOKEN: Your CxOne API Key
+    * GITHUB_TOKEN: github personal access token
     
 
 ## Two ways to import  

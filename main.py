@@ -27,10 +27,7 @@ if __name__ == '__main__':
     github_org = os.getenv("GITHUB_ORG")
     logger.info(f"github organization: {github_org}")
     github_access_token = os.getenv("GITHUB_TOKEN")
-    cx_one_scanners = [scanner.strip().strip("\"").strip("\'").lower()
-                       for scanner in os.getenv("CXONE_SCANNERS").split(",")]
     cxone_github_auth_code = os.getenv("CXONE_GITHUB_AUTH_CODE")
-
     repos_from_github = get_github_repos_by_org(organization=github_org, access_token=github_access_token)
     project_list = get_all_projects()
     project_name_list = [project.name for project in project_list]
