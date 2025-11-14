@@ -59,8 +59,8 @@ if __name__ == '__main__':
                     "url": repo.get("url"),
                     "webhookEnabled": repo.get("webhookEnabled"),
                     "prDecorationEnabled": repo.get("prDecorationEnabled"),
-                    "secretsDerectionScannerEnabled": repo.get("secretsDerectionScannerEnabled"),
-                    "ossfSecoreCardScannerEnabled": repo.get("ossfSecoreCardScannerEnabled"),
+                    "secretsDetectionScannerEnabled": repo.get("secretsDetectionScannerEnabled"),
+                    "ossfScoreCardScannerEnabled": repo.get("ossfScoreCardScannerEnabled"),
                     "scaAutoPrEnabled": False,
                     "webhookId": repo.get("webhookId"),
                     "sshRepoUrl": repo.get("sshRepoUrl"),
@@ -80,4 +80,7 @@ if __name__ == '__main__':
                 "defaultBranch": repo.default_branch,
             })
     if github_org and cxone_github_auth_code:
-        batch_import_repo(repos=repos, origin="GITHUB", organization=github_org, auth_code=cxone_github_auth_code)
+        batch_import_repo(
+            repos=repos, origin="GITHUB", organization=github_org, auth_code=cxone_github_auth_code,
+            sca_auto_pr_enabled=True, chunk_size=200
+        )
