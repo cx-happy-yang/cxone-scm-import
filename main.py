@@ -61,7 +61,7 @@ if __name__ == '__main__':
                     "prDecorationEnabled": repo.get("prDecorationEnabled"),
                     "secretsDetectionScannerEnabled": repo.get("secretsDetectionScannerEnabled"),
                     "ossfScoreCardScannerEnabled": repo.get("ossfScoreCardScannerEnabled"),
-                    "scaAutoPrEnabled": False,
+                    "scaAutoPrEnabled": True,
                     "webhookId": repo.get("webhookId"),
                     "sshRepoUrl": repo.get("sshRepoUrl"),
                     "sshState": "SKIPPED",
