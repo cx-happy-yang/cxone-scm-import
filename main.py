@@ -47,9 +47,9 @@ if __name__ == '__main__':
                 logger.info("get a project by id")
                 project = get_a_project_by_id(project_id=project_id)
                 logger.info("get a repo by id")
-                repo = get_repo_by_id(repo_id=project.repoId)
-                logger.info(f"turn off project {project.name} scaAutoPrEnabled")
-                update_repo_by_id(repo_id=project.repoId, project_id=project_id, pay_load={
+                repo = get_repo_by_id(repo_id=project.repo_id)
+                logger.info(f"turn on project {project.name} scaAutoPrEnabled")
+                update_repo_by_id(repo_id=project.repo_id, project_id=project_id, pay_load={
                     "branches": repo.get("branches"),
                     "kicsScannerEnabled": repo.get("kicsScannerEnabled"),
                     "sastIncrementalScan": repo.get("sastIncrementalScan"),
