@@ -65,7 +65,7 @@ if __name__ == '__main__':
                     "webhookId": repo.get("webhookId"),
                     "sshRepoUrl": repo.get("sshRepoUrl"),
                     "sshState": "SKIPPED",
-                    "isRepoAdmin": True,
+                    "isRepoAdmin": repo.get("isRepoAdmin"),
                     "containerScannerEnabled": repo.get("containerScannerEnabled")
                 })
             except Exception:
@@ -81,6 +81,9 @@ if __name__ == '__main__':
             })
     if github_org and cxone_github_auth_code:
         batch_import_repo(
-            repos=repos, origin="GITHUB", organization=github_org, auth_code=cxone_github_auth_code,
-            sca_auto_pr_enabled=True, chunk_size=200
+            repos=repos, origin="GITHUB", organization=github_org,
+            is_user=False, is_org_webhook_enabled=False, create_ast_project=True, scan_ast_project=False,
+            auth_code=cxone_github_auth_code,
+            webhook_enabled=False, pr_decoration_enabled=False, sca_auto_pr_enabled=False,
+            chunk_size=200
         )
