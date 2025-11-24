@@ -85,5 +85,6 @@ if __name__ == '__main__':
             is_user=False, is_org_webhook_enabled=False, create_ast_project=True, scan_ast_project=False,
             auth_code=cxone_github_auth_code,
             webhook_enabled=False, pr_decoration_enabled=False, sca_auto_pr_enabled=False,
-            chunk_size=200
+            chunk_size=200,
+            delay_request_timeout=30,
         )
