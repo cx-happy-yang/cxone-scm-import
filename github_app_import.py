@@ -83,7 +83,7 @@ if __name__ == '__main__':
     if github_org and cxone_github_app_auth_code:
         batch_import_repo(
             repos=repos, 
-            origin="GITHUB", 
+            origin="GITHUBAPP", 
             organization=github_org,
             is_user=False, 
             is_org_webhook_enabled=False, 
