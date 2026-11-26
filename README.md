@@ -27,4 +27,17 @@ Please use Python3!
    b. on Linux/MacOS: source .venv/bin/activate
 3. install the dependencies: pip install -r requirements.txt
 4. update the auto_code in main.py. Please find the auth_code from CxOne Portal developer tools.
-5. run the python script: python main.py
+5. run the python script: python main.py (GitHub OAuth app), python github_app_import.py (GitHub App) or python gitlab_import.py (self-hosted GitLab)
+
+## Importing a self-hosted GitLab group (gitlab_import.py)
+Additional environment variables:
+    * GITLAB_URL: base url of your GitLab instance, for example https://gitlab.example.com
+    * GITLAB_TOKEN: GitLab personal access token (read_api scope)
+    * GITLAB_GROUP: GitLab group path or id; subgroups are included
+    * CXONE_GITLAB_AUTH_CODE: auth code of your self-hosted GitLab SCM in CxOne (from CxOne Portal developer tools)
+
+The GitLab instance must already be configured as an SCM in your CxOne tenant. The script finds its SCM id by matching the host of GITLAB_URL. Archived and empty projects are skipped; CxOne project names are the full GitLab path (group/subgroup/project).
+
+## Code layout
+    * scm_common.py: shared helpers (env loading, skip/refresh already imported projects)
+    * main.py, github_app_import.py, gitlab_import.py: one entry point per SCM
