@@ -37,12 +37,21 @@ Please use Python3!
     * CXONE_GITHUBAPP_AUTH_CODE: your GitHub App auth code (github_app_import.py)
 
 ### Self-hosted GitLab (gitlab_import.py)
+Required:
     * GITLAB_URL: base url of your GitLab instance, for example https://gitlab.example.com
-    * GITLAB_TOKEN: GitLab personal access token with the `read_api` scope
-    * GITLAB_GROUP: GitLab group path or id; subgroups are included
+    * GITLAB_TOKEN: GitLab personal access token with the `read_api` scope. Only groups the token can see are found, use an admin token to see all groups
     * CXONE_GITLAB_AUTH_CODE: auth code of your self-hosted GitLab SCM in CxOne
+
+Optional:
     * CXONE_GITLAB_INSTANCE_NAME (recommended): instance name of the GitLab SCM in CxOne, for example gitlab_20261126. Without it the SCM is matched by GITLAB_URL, which fails if zero or several SCMs match (for example a stale one whose tunnel was removed)
-    * GITLAB_CA_BUNDLE (optional): path to a CA certificate file (.pem) if your GitLab uses a self-signed or internal CA. TLS verification is never disabled
+    * GITLAB_CA_BUNDLE: path to a CA certificate file (.pem) if your GitLab uses a self-signed or internal CA. TLS verification is never disabled
+    * GITLAB_GROUP: comma separated top-level group paths or ids. If unset, every top-level group the token can see is imported
+    * GITLAB_GROUP_INCLUDE: comma separated path patterns, only matching groups/projects are imported
+    * GITLAB_GROUP_EXCLUDE: comma separated path patterns, matching groups/projects are skipped (exclude wins over include)
+    * GITLAB_GROUP_FILE: file with one include pattern per line (`#` comments allowed), added to GITLAB_GROUP_INCLUDE
+    * DRY_RUN: `true` only reports what would be imported, nothing is changed
+    * IMPORT_STATE_FILE: state file for resume and retry (default `./gitlab_import_state.json`)
+    * IMPORT_DEADLINE_HOURS: how long failed groups are retried (default 48)
 
 Find the auth codes in the CxOne Portal developer tools (network tab) while connecting to the SCM.
 
@@ -59,27 +68,34 @@ Find the auth codes in the CxOne Portal developer tools (network tab) while conn
 
         GITLAB_URL=https://gitlab.example.com
         GITLAB_TOKEN=<gitlab personal access token>
-        GITLAB_GROUP=my-group
         CXONE_GITLAB_AUTH_CODE=<auth code from CxOne portal>
         CXONE_GITLAB_INSTANCE_NAME=<instance name of the GitLab SCM in CxOne>
         GITLAB_CA_BUNDLE=/path/to/gitlab.pem    # only for self-signed / internal CA
 
-4. Run: `python gitlab_import.py`
+4. Preview first: `DRY_RUN=true python gitlab_import.py`
+5. Run: `python gitlab_import.py`
 
-What the script does:
-1. finds the CxOne GitLab SCM by `CXONE_GITLAB_INSTANCE_NAME`, or else by `GITLAB_URL` (it exits and lists the available GitLab SCMs unless exactly one matches). The SCM list is at `/api/repos-manager/v2/scms`
-2. lists all projects in `GITLAB_GROUP` and its subgroups, skipping archived and empty (no default branch) projects
-3. skips projects that already exist in CxOne (and refreshes their repo settings)
-4. imports the rest in chunks of 200 and waits for each chunk to finish
+#### Choosing groups
+Patterns match the full path of a group or project and support `*`. A pattern also covers everything below it, so `team` covers `team/sub/repo`. Exclude wins over include.
 
-CxOne project names are the full GitLab path (`group/subgroup/project`). The import flags (webhook, PR decoration, scan after import) are set in the `import_new_repos(...)` call at the bottom of `gitlab_import.py`; by default webhooks, PR decoration and scan-after-import are off.
+    GITLAB_GROUP_INCLUDE=team-*,platform/payments    # only these
+    GITLAB_GROUP_EXCLUDE=platform/legacy*            # but not these
+    GITLAB_GROUP_FILE=groups.txt                     # one include pattern per line
 
-Tip: try a small top-level group first. Nested group paths (`a/b`) may need URL-encoding or the numeric group id as the organization value.
+Subgroups are imported together with their top-level group. The CxOne project name is the full path (`group/subgroup/project`). Archived projects and projects without commits yet are skipped.
+
+#### Large instances, resume and retry
+The groups are imported one after another (CxOne imports must not run in parallel). After every group the progress is written to the state file (`pending`, `in_progress`, `done` or `failed`, with attempts and the last error).
+* If the script is killed, run it again: finished groups are skipped. A group that was cut off mid-import is detected, the script waits until CxOne reports its import job at 100%, and then runs that group again. Repos that already exist in CxOne are always skipped.
+* A failed group is retried with growing waits (5 min, 10 min, ... up to 1 hour) until everything is done or `IMPORT_DEADLINE_HOURS` has passed. Then the script exits with code 1 and the state file lists what is left. Restarting gives a fresh deadline.
+* Credential errors (401, 403, `Failed to load access token`, for example an expired auth code) are not retried. The script exits with code 2 and keeps the state: put a new `CXONE_GITLAB_AUTH_CODE` in the env file and run it again to resume.
+* To start over, delete the state file.
 
 ## Two ways to import
 1. using the documented REST API : [/api/repos-manager/scm-projects](https://checkmarx.stoplight.io/docs/checkmarx-one-api-reference-guide/branches/main/5yefdw9pm675i-import-code-repository)
 2. using oauth code, and using an undocumented REST API:  /api/repos-manager/scms/{scm_id}/orgs/{org}/asyncImport (GitHub) or /repos (GitLab). The scripts in this repo use this one.
 
 ## Code layout
-    * scm_common.py: shared helpers (env loading, skip/refresh already imported projects)
+    * scm_common.py: shared helpers (env loading, GitHub helpers, skip/refresh already imported projects)
+    * import_state.py: resume/retry state and the retry-until-deadline runner used by gitlab_import.py
     * github_oauth_import.py, github_app_import.py, gitlab_import.py: one entry point per SCM

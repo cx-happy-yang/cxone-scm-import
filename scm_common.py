@@ -90,12 +90,15 @@ def split_new_and_existing(
     repos: List[dict],
     update_existing: bool = True,
     sca_auto_pr_enabled: Optional[bool] = None,
+    existing: Optional[Dict[str, object]] = None,
 ) -> List[dict]:
     """Return the repos not yet in CxOne; optionally refresh the settings of those already imported.
 
     Each repo dict needs "fullName" (the CxOne project name), as used by batch_import_repo.
+    existing: CxOne projects keyed by name; pass it to avoid reloading all projects on every call.
     """
-    existing = get_existing_projects()
+    if existing is None:
+        existing = get_existing_projects()
     new_repos = []
     for repo in repos:
         full_name = repo["fullName"]
@@ -118,14 +121,22 @@ def import_new_repos(
     import_fn: Callable[..., None],
     update_existing: bool = True,
     sca_auto_pr_enabled_existing: Optional[bool] = None,
+    existing: Optional[Dict[str, object]] = None,
     **import_kwargs,
 ) -> None:
-    """Filter out already imported repos, then call import_fn(repos=new_repos, **import_kwargs)."""
+    """Filter out already imported repos, then call import_fn(repos=new_repos, existing_project_names=..., **kwargs).
+
+    existing: CxOne projects keyed by name. Pass it when calling repeatedly (e.g. once per group), so the full project
+    list is loaded once, and the SDK does not reload it on every call.
+    """
+    if existing is None:
+        existing = get_existing_projects()
     new_repos = split_new_and_existing(
-        repos, update_existing=update_existing, sca_auto_pr_enabled=sca_auto_pr_enabled_existing
+        repos, update_existing=update_existing, sca_auto_pr_enabled=sca_auto_pr_enabled_existing,
+        existing=existing,
     )
     if not new_repos:
         logger.info("no new repos to import")
         return
     logger.info(f"importing {len(new_repos)} new repos")
-    import_fn(repos=new_repos, **import_kwargs)
+    import_fn(repos=new_repos, existing_project_names=existing.keys(), **import_kwargs)

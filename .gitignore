@@ -2,3 +2,5 @@
 .venv
 *.env
 __pycache__/
+gitlab_import_state.json
+*.tmp
