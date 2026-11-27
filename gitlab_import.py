@@ -8,7 +8,7 @@ Optional env vars:
     GITLAB_GROUP_FILE        file with one include pattern per line (# comments allowed), added to GITLAB_GROUP_INCLUDE
     DRY_RUN                  true: only report what would be imported, change nothing
     IMPORT_STATE_FILE        resume/retry state file (default ./gitlab_import_state.json)
-    IMPORT_DEADLINE_HOURS    keep retrying failed groups for this long (default 48)
+    IMPORT_DEADLINE_HOURS    keep retrying failed groups for this long (default 240)
     CXONE_GITLAB_INSTANCE_NAME, GITLAB_CA_BUNDLE   see README
 """
 import os
@@ -148,17 +148,33 @@ def is_permanent_error(exc: Exception) -> bool:
 # ---------- main flow ----------
 
 def wait_for_cxone_idle(api: RepoManagerAPI, max_wait: float = 7200, interval: float = 30,
-                        sleep=time.sleep, now=time.monotonic) -> None:
-    """Block until the CxOne import job reports 100%, so a restart never submits a group that is still importing."""
+                        none_tolerance: int = 3, sleep=time.sleep, now=time.monotonic) -> None:
+    """Block until the CxOne import job reports 100%, so a submit never races a job that is still importing.
+
+    The percentage is the only signal the job-status stream offers. A poll that returns nothing (None) is
+    ambiguous: no job may be running, or a job may not have reported yet. After none_tolerance consecutive
+    empty polls a running job would have reported, so the wait gives up and assumes CxOne is idle; if that
+    is wrong, the next import fails and is retried with backoff, so nothing is lost.
+    """
     deadline = now() + max_wait
+    none_streak = 0
     while True:
         try:
             percentage = api.get_job_status()
-            logger.info(f"cxone import job status: {percentage}%")
-            if percentage is not None and percentage >= 100:
-                return
         except Exception as e:
             logger.info(f"cannot read cxone job status ({type(e).__name__}), will check again")
+            percentage = None
+        if percentage is not None and percentage >= 100:
+            logger.info("cxone import job status: 100%, CxOne is idle")
+            return
+        if percentage is None:
+            none_streak += 1
+            if none_streak >= none_tolerance:
+                logger.info(f"cxone job status carried no percentage for {none_streak} polls, assuming CxOne is idle")
+                return
+        else:
+            none_streak = 0
+            logger.info(f"cxone import job status: {percentage}%")
         if now() >= deadline:
             logger.warning(f"cxone import job did not report 100% within {max_wait}s, continuing anyway")
             return
@@ -198,7 +214,7 @@ def import_group(gl, api, group, existing, include, exclude, auth_code, dry_run=
         pr_decoration_enabled=False,
         sca_auto_pr_enabled=False,
         chunk_size=200,
-        delay_request_timeout=30,
+        delay_request_timeout=10,
     )
     existing.update({r["fullName"]: None for r in new})
     return {"importable": len(repos), "new": len(new)}
@@ -210,7 +226,7 @@ if __name__ == '__main__':
     auth_code = require_env("CXONE_GITLAB_AUTH_CODE")
     dry_run = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
     state_file = os.getenv("IMPORT_STATE_FILE", "./gitlab_import_state.json")
-    deadline_hours = float(os.getenv("IMPORT_DEADLINE_HOURS", "48"))
+    deadline_hours = float(os.getenv("IMPORT_DEADLINE_HOURS", "240"))
     include = parse_patterns(os.getenv("GITLAB_GROUP_INCLUDE"), os.getenv("GITLAB_GROUP_FILE"))
     exclude = parse_patterns(os.getenv("GITLAB_GROUP_EXCLUDE"))
     explicit_groups = parse_patterns(os.getenv("GITLAB_GROUP"))
@@ -219,26 +235,50 @@ if __name__ == '__main__':
     register_self_hosted_gitlab(api, gitlab_url, os.getenv("CXONE_GITLAB_INSTANCE_NAME"))
     gl = get_gitlab_client(gitlab_url, gitlab_token, os.getenv("GITLAB_CA_BUNDLE"))
     groups = select_groups(gl, explicit_groups, include, exclude)
-    existing = get_existing_projects()  # loaded once, not per group
-
-    def process(group: str) -> dict:
-        return import_group(gl, api, group, existing, include, exclude, auth_code, dry_run=dry_run)
+    existing = get_existing_projects()  # loaded once, refreshed before retries
 
     if dry_run:
         logger.info("DRY_RUN: nothing is imported and the state file is not touched")
         totals = {"importable": 0, "new": 0}
         for group in groups:
-            for k, v in process(group).items():
+            for k, v in import_group(gl, api, group, existing, include, exclude, auth_code, dry_run=True).items():
                 totals[k] += v
         logger.info(f"DRY_RUN summary: {len(groups)} group(s), {totals['importable']} importable project(s), "
                     f"{totals['new']} would be imported")
         raise SystemExit(0)
 
     state = ImportState(state_file)
+    # A failed import can leave a CxOne job still running, and CxOne rejects a new import while one runs,
+    # so the next submit must wait until the job reports 100%. guard remembers that a wait is owed.
+    guard = {"dirty": True}
+    # A group cut off mid-import may have created some projects already; refresh the project list before
+    # retrying it, so those repos are skipped instead of being imported a second time.
+    interrupted = {"refresh": False}
+
+    def on_interrupted(group: str) -> None:
+        interrupted["refresh"] = True
+        wait_for_cxone_idle(api)
+        guard["dirty"] = False  # the wait above already covered it
+
+    def process(group: str) -> dict:
+        if guard["dirty"]:
+            wait_for_cxone_idle(api)
+            guard["dirty"] = False
+        if interrupted["refresh"] or state.units[group]["attempts"] > 0:
+            interrupted["refresh"] = False
+            logger.info(f"retrying {group}: refreshing the CxOne project list so repos created "
+                        f"by the failed attempt are skipped")
+            existing.update(get_existing_projects())
+        try:
+            return import_group(gl, api, group, existing, include, exclude, auth_code)
+        except Exception:
+            guard["dirty"] = True  # the job may still be running; wait before the next group
+            raise
+
     try:
         finished = run_until_done(
             groups, process, state, deadline_seconds=deadline_hours * 3600, is_permanent=is_permanent_error,
-            on_interrupted=lambda group: wait_for_cxone_idle(api),
+            on_interrupted=on_interrupted,
         )
     except PermanentImportError as e:
         logger.error(f"stopped, fix the cause and run again to resume (state: {state_file}): {e}")

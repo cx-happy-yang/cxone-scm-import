@@ -88,6 +88,7 @@ Subgroups are imported together with their top-level group. The CxOne project na
 The groups are imported one after another (CxOne imports must not run in parallel). After every group the progress is written to the state file (`pending`, `in_progress`, `done` or `failed`, with attempts and the last error).
 * If the script is killed, run it again: finished groups are skipped. A group that was cut off mid-import is detected, the script waits until CxOne reports its import job at 100%, and then runs that group again. Repos that already exist in CxOne are always skipped.
 * A failed group is retried with growing waits (5 min, 10 min, ... up to 1 hour) until everything is done or `IMPORT_DEADLINE_HOURS` has passed. Then the script exits with code 1 and the state file lists what is left. Restarting gives a fresh deadline.
+* A failed import can leave a CxOne job still running, and CxOne rejects a new import while one runs. Before the next group (and before the first one) the script therefore waits until CxOne reports its import job as finished; before a retry it also refreshes the CxOne project list, so repos created by the failed attempt are skipped instead of imported again.
 * Credential errors (401, 403, `Failed to load access token`, for example an expired auth code) are not retried. The script exits with code 2 and keeps the state: put a new `CXONE_GITLAB_AUTH_CODE` in the env file and run it again to resume.
 * To start over, delete the state file.
 
