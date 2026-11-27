@@ -4,6 +4,7 @@ import os
 from typing import Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
+from github import Auth, Github
 
 # Load the env file before anything reads configuration. Override the default with ENV_FILE=...
 load_dotenv(os.getenv("ENV_FILE", "./happy.env"), override=True)
@@ -23,6 +24,22 @@ def require_env(name: str) -> str:
     if not value:
         raise SystemExit(f"Missing required environment variable: {name}")
     return value
+
+
+def get_github_repos_by_org(organization: str, access_token: str):
+    return Github(auth=Auth.Token(access_token)).get_organization(organization).get_repos()
+
+
+def github_repo_to_cxone_repo(repo, host_url: str = "https://github.com/") -> dict:
+    """Map a GitHub repo to the repo dict expected by batch_import_repo."""
+    full_name = repo.html_url.replace(host_url, "")
+    return {
+        "id": full_name.split("/")[1],
+        "fullName": full_name,
+        "url": repo.html_url,
+        "sshRepoUrl": f"git@github.com:{full_name}.git",
+        "defaultBranch": repo.default_branch,
+    }
 
 
 def get_existing_projects() -> Dict[str, object]:

@@ -4,7 +4,7 @@ Python scripts that import all repositories of a GitHub organization or a self-h
 
 | Script | SCM | Import via |
 | --- | --- | --- |
-| `main.py` | GitHub | OAuth app (default) |
+| `github_oauth_import.py` | GitHub | OAuth app (default) |
 | `github_app_import.py` | GitHub | GitHub App |
 | `gitlab_import.py` | Self-hosted GitLab | OAuth auth code |
 
@@ -30,10 +30,10 @@ Please use Python3!
     * CXONE_GRANT_TYPE: refresh_token
     * CXONE_REFRESH_TOKEN: Your CxOne API Key
 
-### GitHub (main.py, github_app_import.py)
+### GitHub (github_oauth_import.py, github_app_import.py)
     * GITHUB_ORG: your GitHub organization name, which is case-sensitive
     * GITHUB_TOKEN: github personal access token
-    * CXONE_GITHUB_AUTH_CODE: your GitHub auth code (main.py)
+    * CXONE_GITHUB_AUTH_CODE: your GitHub auth code (github_oauth_import.py)
     * CXONE_GITHUBAPP_AUTH_CODE: your GitHub App auth code (github_app_import.py)
 
 ### Self-hosted GitLab (gitlab_import.py)
@@ -47,7 +47,7 @@ Find the auth codes in the CxOne Portal developer tools (network tab) while conn
 ## How to run
 
 ### GitHub
-    python main.py                # OAuth app
+    python github_oauth_import.py   # OAuth app
     python github_app_import.py   # GitHub App
 
 ### Self-hosted GitLab
@@ -78,4 +78,4 @@ Tip: try a small top-level group first. Nested group paths (`a/b`) may need URL-
 
 ## Code layout
     * scm_common.py: shared helpers (env loading, skip/refresh already imported projects)
-    * main.py, github_app_import.py, gitlab_import.py: one entry point per SCM
+    * github_oauth_import.py, github_app_import.py, gitlab_import.py: one entry point per SCM

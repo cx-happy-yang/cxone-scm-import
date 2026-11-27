@@ -1,24 +1,6 @@
-import os
-
-from github import (Github, Auth)
 from CheckmarxPythonSDK.CxOne import batch_import_repo
 
-from scm_common import import_new_repos, logger, require_env
-
-
-def get_github_repos_by_org(organization: str, access_token: str):
-    return Github(auth=Auth.Token(access_token)).get_organization(organization).get_repos()
-
-
-def to_cxone_repo(repo, host_url: str = "https://github.com/") -> dict:
-    full_name = repo.html_url.replace(host_url, "")
-    return {
-        "id": full_name.split("/")[1],
-        "fullName": full_name,
-        "url": repo.html_url,
-        "sshRepoUrl": f"git@github.com:{full_name}.git",
-        "defaultBranch": repo.default_branch,
-    }
+from scm_common import get_github_repos_by_org, github_repo_to_cxone_repo, import_new_repos, logger, require_env
 
 
 if __name__ == '__main__':
@@ -27,7 +9,7 @@ if __name__ == '__main__':
     github_token = require_env("GITHUB_TOKEN")
     cxone_github_auth_code = require_env("CXONE_GITHUB_AUTH_CODE")
 
-    repos = [to_cxone_repo(r) for r in get_github_repos_by_org(github_org, github_token)]
+    repos = [github_repo_to_cxone_repo(r) for r in get_github_repos_by_org(github_org, github_token)]
     import_new_repos(
         repos,
         import_fn=batch_import_repo,
