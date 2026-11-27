@@ -47,6 +47,11 @@ def get_existing_projects() -> Dict[str, object]:
     return {project.name: project for project in get_all_projects()}
 
 
+def _flag(value):
+    """Newer CxOne versions return settings as {"value": ..., "isEditable": ...}; the update API wants the plain value."""
+    return value.get("value") if isinstance(value, dict) else value
+
+
 def update_existing_repo_settings(project, sca_auto_pr_enabled: Optional[bool] = None) -> None:
     """Re-save the repo settings of an already imported project.
 
@@ -54,27 +59,30 @@ def update_existing_repo_settings(project, sca_auto_pr_enabled: Optional[bool] =
     sshState is always set to SKIPPED.
     """
     project = get_a_project_by_id(project_id=project.id)
+    if project.repo_id is None:
+        logger.info(f"project {project.name} was not imported from an SCM, skip")
+        return
     repo = get_repo_by_id(repo_id=project.repo_id)
     if sca_auto_pr_enabled is None:
-        sca_auto_pr_enabled = repo.get("scaAutoPrEnabled")
+        sca_auto_pr_enabled = _flag(repo.get("scaAutoPrEnabled"))
     update_repo_by_id(repo_id=project.repo_id, project_id=project.id, pay_load={
         "branches": repo.get("branches"),
-        "kicsScannerEnabled": repo.get("kicsScannerEnabled"),
-        "sastIncrementalScan": repo.get("sastIncrementalScan"),
-        "sastScannerEnabled": repo.get("sastScannerEnabled"),
-        "scaScannerEnabled": repo.get("scaScannerEnabled"),
-        "apiSecScannerEnabled": repo.get("apiSecScannerEnabled"),
+        "kicsScannerEnabled": _flag(repo.get("kicsScannerEnabled")),
+        "sastIncrementalScan": _flag(repo.get("sastIncrementalScan")),
+        "sastScannerEnabled": _flag(repo.get("sastScannerEnabled")),
+        "scaScannerEnabled": _flag(repo.get("scaScannerEnabled")),
+        "apiSecScannerEnabled": _flag(repo.get("apiSecScannerEnabled")),
         "url": repo.get("url"),
         "webhookEnabled": repo.get("webhookEnabled"),
-        "prDecorationEnabled": repo.get("prDecorationEnabled"),
-        "secretsDetectionScannerEnabled": repo.get("secretsDetectionScannerEnabled"),
-        "ossfScoreCardScannerEnabled": repo.get("ossfScoreCardScannerEnabled"),
+        "prDecorationEnabled": _flag(repo.get("prDecorationEnabled")),
+        "secretsDetectionScannerEnabled": _flag(repo.get("secretsDetectionScannerEnabled")),
+        "ossfScoreCardScannerEnabled": _flag(repo.get("ossfScoreCardScannerEnabled")),
         "scaAutoPrEnabled": sca_auto_pr_enabled,
         "webhookId": repo.get("webhookId"),
         "sshRepoUrl": repo.get("sshRepoUrl"),
         "sshState": "SKIPPED",
         "isRepoAdmin": repo.get("isRepoAdmin"),
-        "containerScannerEnabled": repo.get("containerScannerEnabled"),
+        "containerScannerEnabled": _flag(repo.get("containerScannerEnabled")),
     })
 
 
