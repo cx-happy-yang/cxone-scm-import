@@ -41,6 +41,8 @@ Please use Python3!
     * GITLAB_TOKEN: GitLab personal access token with the `read_api` scope
     * GITLAB_GROUP: GitLab group path or id; subgroups are included
     * CXONE_GITLAB_AUTH_CODE: auth code of your self-hosted GitLab SCM in CxOne
+    * CXONE_GITLAB_INSTANCE_NAME (recommended): instance name of the GitLab SCM in CxOne, for example gitlab_20261126. Without it the SCM is matched by GITLAB_URL, which fails if zero or several SCMs match (for example a stale one whose tunnel was removed)
+    * GITLAB_CA_BUNDLE (optional): path to a CA certificate file (.pem) if your GitLab uses a self-signed or internal CA. TLS verification is never disabled
 
 Find the auth codes in the CxOne Portal developer tools (network tab) while connecting to the SCM.
 
@@ -59,11 +61,13 @@ Find the auth codes in the CxOne Portal developer tools (network tab) while conn
         GITLAB_TOKEN=<gitlab personal access token>
         GITLAB_GROUP=my-group
         CXONE_GITLAB_AUTH_CODE=<auth code from CxOne portal>
+        CXONE_GITLAB_INSTANCE_NAME=<instance name of the GitLab SCM in CxOne>
+        GITLAB_CA_BUNDLE=/path/to/gitlab.pem    # only for self-signed / internal CA
 
 4. Run: `python gitlab_import.py`
 
 What the script does:
-1. finds the CxOne SCM type whose host matches `GITLAB_URL` (it exits and lists the available SCM types if none matches)
+1. finds the CxOne GitLab SCM by `CXONE_GITLAB_INSTANCE_NAME`, or else by `GITLAB_URL` (it exits and lists the available GitLab SCMs unless exactly one matches). The SCM list is at `/api/repos-manager/v2/scms`
 2. lists all projects in `GITLAB_GROUP` and its subgroups, skipping archived and empty (no default branch) projects
 3. skips projects that already exist in CxOne (and refreshes their repo settings)
 4. imports the rest in chunks of 200 and waits for each chunk to finish

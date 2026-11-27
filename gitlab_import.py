@@ -1,6 +1,6 @@
 """Import all projects of a self-hosted GitLab group (including subgroups) into CxOne.
 
-Env vars: GITLAB_URL, GITLAB_TOKEN, GITLAB_GROUP, CXONE_GITLAB_AUTH_CODE, optional GITLAB_CA_BUNDLE (+ the usual CXONE_* settings).
+Env vars: GITLAB_URL, GITLAB_TOKEN, GITLAB_GROUP, CXONE_GITLAB_AUTH_CODE, optional GITLAB_CA_BUNDLE and CXONE_GITLAB_INSTANCE_NAME (+ the usual CXONE_* settings).
 """
 import os
 from typing import List
@@ -49,15 +49,18 @@ def _norm(url: str) -> str:
     return f"{parsed.netloc.lower()}{parsed.path.rstrip('/')}"
 
 
-def register_self_hosted_gitlab(api: RepoManagerAPI, gitlab_url: str, scm_id: int = None) -> None:
+def register_self_hosted_gitlab(api: RepoManagerAPI, gitlab_url: str, instance_name: str = None) -> None:
     """Point the SDK's "GITLAB" origin at the tenant's SCM type of this GitLab instance.
 
     The SDK hardcodes GITLAB to SCM id 2 (gitlab.com); a self-hosted instance has its own SCM id.
-    Pass scm_id (CXONE_GITLAB_SCM_ID) to choose explicitly. Otherwise a GitLab SCM matches when its base url equals
-    gitlab_url (host + path) or its instance name equals the host of gitlab_url; it must match exactly one.
+    instance_name (CXONE_GITLAB_INSTANCE_NAME) selects the SCM by its instance name in CxOne. Without it, a GitLab SCM
+    matches when its base url equals gitlab_url (host + path) or its instance name equals the host of gitlab_url;
+    exactly one must match.
     """
     scm_types = [s for s in api.get_all_scm_types_v2() if "gitlab" in (s.type or "").lower()]
-    if scm_id is None:
+    if instance_name:
+        matches = [s for s in scm_types if s.instanceName == instance_name]
+    else:
         target = _norm(gitlab_url)
         host = urlparse(gitlab_url).netloc.lower()
         matches = [
@@ -65,14 +68,13 @@ def register_self_hosted_gitlab(api: RepoManagerAPI, gitlab_url: str, scm_id: in
             if any(u and _norm(u) == target for u in (s.repoBaseUrl, s.authBaseUrl))
             or (s.instanceName or "").lower() == host
         ]
-        if len(matches) != 1:
-            available = [(s.id, s.instanceName, s.repoBaseUrl) for s in scm_types]
-            raise SystemExit(
-                f"{len(matches)} GitLab SCMs match {gitlab_url}; set CXONE_GITLAB_SCM_ID to one of: {available}"
-            )
-        scm_id = matches[0].id
-    logger.info(f"using GitLab SCM type id {scm_id}")
-    api.origin_dict["GITLAB"] = scm_id
+    if len(matches) != 1:
+        available = [(s.id, s.instanceName, s.repoBaseUrl) for s in scm_types]
+        raise SystemExit(
+            f"{len(matches)} GitLab SCMs match; set CXONE_GITLAB_INSTANCE_NAME to one of: {available}"
+        )
+    logger.info(f"using GitLab SCM {matches[0].instanceName} (id {matches[0].id})")
+    api.origin_dict["GITLAB"] = matches[0].id
 
 
 if __name__ == '__main__':
@@ -83,8 +85,7 @@ if __name__ == '__main__':
     logger.info(f"gitlab {gitlab_url}, group: {gitlab_group}")
 
     api = RepoManagerAPI()
-    scm_id = os.getenv("CXONE_GITLAB_SCM_ID")
-    register_self_hosted_gitlab(api, gitlab_url, int(scm_id) if scm_id else None)
+    register_self_hosted_gitlab(api, gitlab_url, os.getenv("CXONE_GITLAB_INSTANCE_NAME"))
 
     repos = collect_repos(get_gitlab_projects_by_group(
         gitlab_url, gitlab_token, gitlab_group, ca_bundle=os.getenv("GITLAB_CA_BUNDLE")))
