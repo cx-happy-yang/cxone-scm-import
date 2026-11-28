@@ -1,4 +1,4 @@
-CheckmarxPythonSDK @ git+https://github.com/checkmarx-ts/checkmarx-python-sdk.git@00bde39d7a043b6fda1d7f23ed95fcff98209b0b
+CheckmarxPythonSDK @ git+https://github.com/checkmarx-ts/checkmarx-python-sdk.git@b6a80fdb0c8af19e4553941ab3c30cfe94f09550
 python-dotenv==1.2.4
 PyGithub==2.5.0
 python-gitlab==8.6.0
