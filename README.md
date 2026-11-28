@@ -36,6 +36,20 @@ Please use Python3!
     * CXONE_GITHUB_AUTH_CODE: your GitHub auth code (github_oauth_import.py)
     * CXONE_GITHUBAPP_AUTH_CODE: your GitHub App auth code (github_app_import.py)
 
+Optional (same semantics as the GitLab script):
+    * GITHUB_REPO_INCLUDE / GITHUB_REPO_EXCLUDE: comma separated "org/repo" patterns (wildcards ok),
+      exclude wins over include; GITHUB_REPO_FILE adds one include pattern per line
+    * BATCH_SIZE: repos per import batch (default 200)
+    * DRY_RUN: `true` only reports what would be imported, nothing is changed
+    * IMPORT_DEADLINE_HOURS: how long failed repos are retried (default 48)
+
+GitHub's `asyncImport` runs asynchronously: the SDK waits for each batch's job to report 100% before
+submitting the next, so imports are still strictly sequential. Archived repos and repos without
+commits yet are skipped, repos already in CxOne are skipped (their repo settings are refreshed
+instead), failed batches are retried with growing waits, and a restart is safe without any state
+file: the script re-lists the org and skips what exists. Exit codes: 0 done, 1 deadline reached,
+2 credential error (fix and run again).
+
 ### Self-hosted GitLab (gitlab_import.py)
 Required:
     * GITLAB_URL: base url of your GitLab instance, for example https://gitlab.example.com

@@ -1,6 +1,8 @@
 """Helpers shared by the SCM import scripts (GitHub OAuth app, GitHub App, GitLab self-hosted)."""
 import logging
 import os
+import time
+from fnmatch import fnmatchcase
 from typing import Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -26,6 +28,50 @@ def require_env(name: str) -> str:
     return value
 
 
+# ---------- include / exclude filters ----------
+
+def parse_patterns(value: Optional[str] = None, file_path: Optional[str] = None) -> List[str]:
+    patterns = [p.strip() for p in (value or "").split(",") if p.strip()]
+    if file_path:
+        with open(file_path, encoding="utf-8") as f:
+            patterns += [line.strip() for line in f if line.strip() and not line.lstrip().startswith("#")]
+    return patterns
+
+
+def _matches(path: str, pattern: str) -> bool:
+    """True if pattern matches the path or one of its ancestor groups (so "team" covers "team/sub/repo")."""
+    parts = path.split("/")
+    return any(fnmatchcase("/".join(parts[:i]), pattern) for i in range(1, len(parts) + 1))
+
+
+def is_selected(path: str, include: List[str], exclude: List[str]) -> bool:
+    if any(_matches(path, p) for p in exclude):
+        return False
+    return not include or any(_matches(path, p) for p in include)
+
+
+# ---------- errors ----------
+
+def is_permanent_error(exc: Exception) -> bool:
+    """Errors that retrying cannot fix: bad/expired credentials. Retrying only wastes the deadline."""
+    try:
+        import gitlab
+        if isinstance(exc, gitlab.exceptions.GitlabAuthenticationError):
+            return True
+    except ImportError:  # gitlab package not installed in this environment
+        pass
+    from github import GithubException
+    if isinstance(exc, GithubException):
+        # 403 can be a rate limit (transient) or a permission problem (permanent)
+        if exc.status == 401:
+            return True
+        return exc.status == 403 and "rate limit" not in str(exc).lower()
+    text = str(exc)
+    return any(s in text for s in ("Failed to load access token", "HttpStatusCode: 401", "HttpStatusCode: 403"))
+
+
+# ---------- GitHub access ----------
+
 def get_github_repos_by_org(organization: str, access_token: str):
     return Github(auth=Auth.Token(access_token)).get_organization(organization).get_repos()
 
@@ -42,9 +88,78 @@ def github_repo_to_cxone_repo(repo, host_url: str = "https://github.com/") -> di
     }
 
 
+def collect_github_repos(repos, include: Optional[List[str]] = None,
+                         exclude: Optional[List[str]] = None) -> List[dict]:
+    """Map the org's repos to CxOne repo dicts; archived and empty repos (no commits yet) are skipped.
+
+    include/exclude are path patterns on "org/repo", same semantics as the GitLab filters.
+    """
+    include, exclude = include or [], exclude or []
+    collected = []
+    for repo in repos:
+        path = repo.full_name
+        if getattr(repo, "archived", False):
+            logger.info(f"skip archived repo {path}")
+        elif not repo.default_branch:
+            logger.info(f"skip empty repo {path} (no commits yet)")
+        elif not is_selected(path, include, exclude):
+            logger.info(f"skip repo {path} (excluded by include/exclude filter)")
+        else:
+            collected.append(github_repo_to_cxone_repo(repo))
+    return collected
+
+
+# ---------- CxOne projects ----------
+
 def get_existing_projects() -> Dict[str, object]:
     """CxOne projects keyed by project name (for GitHub/GitLab this is the full repo path)."""
     return {project.name: project for project in get_all_projects()}
+
+
+# ---------- batched import with retry (shared by all three scripts) ----------
+
+def chunked(items: list, size: int):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def run_batches(pending: List[dict], batch_size: int, submit: Callable[[List[dict]], List[dict]],
+                existing: Dict[str, object], deadline_seconds: float, description: str = "repo") -> int:
+    """Import pending repos in sequential batches of batch_size, retrying failures with backoff.
+
+    submit(batch) must import the batch and return the repos that still failed ([] = all imported);
+    it raises on transport errors, which retry the whole batch. The CxOne project list is refreshed
+    before each retry attempt, so repos created by a partially failed batch are not sent again.
+    Returns the process exit code: 0 all imported, 1 deadline reached, 2 permanent error.
+    """
+    deadline = time.time() + deadline_seconds
+    attempt = 0
+    while pending:
+        attempt += 1
+        if attempt > 1:
+            existing.update(get_existing_projects())
+        still_failed: List[dict] = []
+        for batch in chunked(pending, batch_size):
+            try:
+                still_failed.extend(submit(batch) or [])
+            except Exception as e:
+                if is_permanent_error(e):
+                    logger.error(f"stopped, fix the cause and run again to resume: {e}")
+                    return 2
+                logger.exception(f"batch failed, its {description}s will be retried")
+                still_failed.extend(batch)
+        if not still_failed:
+            logger.info(f"all {description}s imported")
+            return 0
+        pending = still_failed
+        if time.time() >= deadline:
+            break
+        wait = min(3600, 300 * 2 ** max(attempt - 1, 0))  # 5 min doubling, cap 1 hour
+        logger.info(f"{len(pending)} {description}(s) still failing, retrying in {wait:.0f}s")
+        time.sleep(wait)
+    logger.error(f"deadline reached, {len(pending)} {description}(s) not imported: "
+                 f"{[r['fullName'] for r in pending]}")
+    return 1
 
 
 def _flag(value):

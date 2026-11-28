@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 import gitlab
 from CheckmarxPythonSDK.CxOne import RepoManagerAPI
 
-from scm_common import get_existing_projects, logger, require_env
+from scm_common import get_existing_projects, is_permanent_error, is_selected, logger, parse_patterns, require_env, run_batches
 
 
 # ---------- GitLab access ----------
@@ -53,34 +53,11 @@ def list_all_projects(gl: gitlab.Gitlab, attempts: int = 3) -> list:
         try:
             return list(gl.projects.list(iterator=True))
         except Exception as e:
-            if attempt == attempts or isinstance(e, gitlab.exceptions.GitlabAuthenticationError):
+            if attempt == attempts or is_permanent_error(e):
                 raise
             logger.warning(f"project listing failed ({type(e).__name__}: {e}), retry {attempt}/{attempts - 1}")
             time.sleep(30)
     return []  # unreachable
-
-
-# ---------- include / exclude filters ----------
-
-def parse_patterns(value: Optional[str] = None, file_path: Optional[str] = None) -> List[str]:
-    patterns = [p.strip() for p in (value or "").split(",") if p.strip()]
-    if file_path:
-        with open(file_path, encoding="utf-8") as f:
-            patterns += [line.strip() for line in f if line.strip() and not line.lstrip().startswith("#")]
-    return patterns
-
-
-def _matches(path: str, pattern: str) -> bool:
-    """True if pattern matches the path or one of its ancestor groups (so "team" covers "team/sub/repo")."""
-    parts = path.split("/")
-    from fnmatch import fnmatchcase
-    return any(fnmatchcase("/".join(parts[:i]), pattern) for i in range(1, len(parts) + 1))
-
-
-def is_selected(path: str, include: List[str], exclude: List[str]) -> bool:
-    if any(_matches(path, p) for p in exclude):
-        return False
-    return not include or any(_matches(path, p) for p in include)
 
 
 # ---------- CxOne SCM ----------
@@ -118,22 +95,7 @@ def register_self_hosted_gitlab(api: RepoManagerAPI, gitlab_url: str, instance_n
     api.origin_dict["GITLAB"] = matches[0].id
 
 
-# ---------- errors ----------
-
-def is_permanent_error(exc: Exception) -> bool:
-    """Errors that retrying cannot fix: bad/expired credentials. Stop and let the user fix them."""
-    if isinstance(exc, gitlab.exceptions.GitlabAuthenticationError):
-        return True
-    text = str(exc)
-    return any(s in text for s in ("Failed to load access token", "HttpStatusCode: 401", "HttpStatusCode: 403"))
-
-
 # ---------- main flow ----------
-
-def chunked(items: list, size: int):
-    for i in range(0, len(items), size):
-        yield items[i:i + size]
-
 
 def import_batches(api, gl, include, exclude, auth_code, dry_run, batch_size, deadline_hours) -> int:
     """List everything once, then import new repos in synchronous batches of batch_size.
@@ -166,65 +128,43 @@ def import_batches(api, gl, include, exclude, auth_code, dry_run, batch_size, de
             logger.info(f"  would import {r['fullName']}")
         return 0
 
-    # -- batched import with retry of genuinely failed repos --
-    deadline = time.time() + deadline_hours * 3600
-    attempt = 0
-    while pending:
-        attempt += 1
-        still_failed: List[dict] = []
-        for batch in chunked(pending, batch_size):
-            organization = batch[0]["fullName"].split("/")[0]
-            try:
-                results = api.batch_import_repo(
-                    repos=batch,
-                    origin="GITLAB",
-                    organization=organization,
-                    auth_code=auth_code,
-                    existing_project_names=existing.keys(),
-                    is_user=False,
-                    is_org_webhook_enabled=False,
-                    create_ast_project=True,
-                    scan_ast_project=False,
-                    webhook_enabled=False,
-                    pr_decoration_enabled=False,
-                    sca_auto_pr_enabled=False,
-                    chunk_size=batch_size,
-                    delay_request_timeout=10,
-                )
-            except Exception as e:
-                if is_permanent_error(e):
-                    logger.error(f"stopped, fix the cause and run again to resume: {e}")
-                    return 2
-                logger.exception(f"batch POST failed, its repos will be retried")
-                still_failed.extend(batch)
-                continue
-            # results is None only when the server answered async and the SDK polled the job instead
-            if results is None:
-                existing.update({r["fullName"]: None for r in batch})
-                continue
-            by_name = {r.get("name"): r for r in results}
-            for repo in batch:
-                name = repo["fullName"]
-                res = by_name.get(name) or {}
-                error = res.get("statusMessageError") or ""
-                if res.get("status") == "SUCCESS" or "already imported" in error:
-                    existing[name] = None
-                else:
-                    logger.warning(f"{name}: {res.get('status')} - {error}")
-                    still_failed.append(repo)
-        if not still_failed:
-            logger.info("all repos imported")
-            return 0
-        pending = still_failed
-        if time.time() >= deadline:
-            break
-        wait = min(3600, 300 * 2 ** max(attempt - 1, 0))  # 5 min doubling, cap 1 hour
-        logger.info(f"{len(pending)} repo(s) still failing, retrying in {wait:.0f}s")
-        time.sleep(wait)
+    def submit(batch: List[dict]) -> List[dict]:
+        """Import one batch; return the repos that still failed (the POST response has per-repo results)."""
+        organization = batch[0]["fullName"].split("/")[0]
+        results = api.batch_import_repo(
+            repos=batch,
+            origin="GITLAB",
+            organization=organization,
+            auth_code=auth_code,
+            existing_project_names=existing.keys(),
+            is_user=False,
+            is_org_webhook_enabled=False,
+            create_ast_project=True,
+            scan_ast_project=False,
+            webhook_enabled=False,
+            pr_decoration_enabled=False,
+            sca_auto_pr_enabled=False,
+            chunk_size=batch_size,
+            delay_request_timeout=10,
+        )
+        # results is None only when the server answered async and the SDK polled the job instead
+        if results is None:
+            existing.update({r["fullName"]: None for r in batch})
+            return []
+        by_name = {r.get("name"): r for r in results}
+        failed = []
+        for repo in batch:
+            name = repo["fullName"]
+            res = by_name.get(name) or {}
+            error = res.get("statusMessageError") or ""
+            if res.get("status") == "SUCCESS" or "already imported" in error:
+                existing[name] = None
+            else:
+                logger.warning(f"{name}: {res.get('status')} - {error}")
+                failed.append(repo)
+        return failed
 
-    logger.error(f"deadline reached, {len(pending)} repo(s) not imported: "
-                 f"{[r['fullName'] for r in pending]}")
-    return 1
+    return run_batches(pending, batch_size, submit, existing, deadline_hours * 3600, description="repo")
 
 
 if __name__ == '__main__':
