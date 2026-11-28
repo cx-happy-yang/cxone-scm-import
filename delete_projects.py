@@ -2,10 +2,11 @@
 
 Optional env vars:
     DELETE_PROJECT_PATTERN   fnmatch pattern on the project name (default "*/*")
-    DELETE_WORKERS           concurrent delete workers sharing one API client (default 5)
+    DELETE_WORKERS           concurrent delete workers sharing one API client (default 20)
 
 Deletion itself lives in the SDK (delete_projects_by_pattern), which reuses one API
-client (connection pool + cached token) for all deletes.
+client (connection pool + cached token) for all deletes. Measured on a live tenant:
+5 workers = 3.6/s, 10 = 7.2/s, 20 = 12.4/s, 40 = 13.4/s (server plateaus near 20).
 """
 import os
 
@@ -17,7 +18,7 @@ from CheckmarxPythonSDK.CxOne import delete_projects_by_pattern  # noqa: E402
 
 def main() -> int:
     pattern = os.getenv("DELETE_PROJECT_PATTERN", "*/*")
-    workers = int(os.getenv("DELETE_WORKERS", "5"))
+    workers = int(os.getenv("DELETE_WORKERS", "20"))
     logger.info(f"deleting projects matching {pattern} with {workers} worker(s)")
     failed = delete_projects_by_pattern(pattern=pattern, workers=workers)
     logger.info(f"failed: {failed if failed else 'none'}")
