@@ -17,7 +17,7 @@ skips whatever already exists in CxOne.
 import os
 import time
 
-from CheckmarxPythonSDK.CxOne import batch_import_repo
+from CheckmarxPythonSDK.CxOne import RepoManagerAPI
 
 from scm_common import (collect_github_repos, get_existing_projects, get_github_repos_by_org,
                         import_new_repos, is_permanent_error, logger, parse_patterns,
@@ -29,6 +29,7 @@ def run() -> int:
     logger.info(f"github organization: {github_org}")
     github_token = require_env("GITHUB_TOKEN")
     auth_code = require_env("CXONE_GITHUB_AUTH_CODE")
+    api = RepoManagerAPI()  # one shared client for all batches (token + connections reused)
     dry_run = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
     batch_size = int(os.getenv("BATCH_SIZE", "200"))
     deadline_hours = float(os.getenv("IMPORT_DEADLINE_HOURS", "48"))
@@ -63,7 +64,7 @@ def run() -> int:
     def submit(batch):
         import_new_repos(
             batch,
-            import_fn=batch_import_repo,
+            import_fn=api.batch_import_repo,
             update_existing=False,
             existing=existing,
             origin="GITHUB", organization=github_org,
