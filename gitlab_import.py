@@ -97,7 +97,8 @@ def register_self_hosted_gitlab(api: RepoManagerAPI, gitlab_url: str, instance_n
 
 # ---------- main flow ----------
 
-def import_batches(api, gl, include, exclude, auth_code, dry_run, batch_size, deadline_hours) -> int:
+def import_batches(api, gl, include, exclude, auth_code, dry_run, batch_size, deadline_hours,
+                   scan_after_import=False) -> int:
     """List everything once, then import new repos in synchronous batches of batch_size.
 
     Returns the process exit code: 0 all imported, 1 deadline reached / unexpected error, 2 permanent error.
@@ -140,7 +141,7 @@ def import_batches(api, gl, include, exclude, auth_code, dry_run, batch_size, de
             is_user=False,
             is_org_webhook_enabled=False,
             create_ast_project=True,
-            scan_ast_project=False,
+            scan_ast_project=scan_after_import,
             webhook_enabled=False,
             pr_decoration_enabled=False,
             sca_auto_pr_enabled=False,
@@ -174,6 +175,7 @@ if __name__ == '__main__':
     dry_run = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
     batch_size = int(os.getenv("BATCH_SIZE", "200"))
     deadline_hours = float(os.getenv("IMPORT_DEADLINE_HOURS", "48"))
+    scan_after_import = os.getenv("SCAN_AFTER_IMPORT", "").lower() in ("1", "true", "yes")
     include = parse_patterns(os.getenv("GITLAB_GROUP_INCLUDE"), os.getenv("GITLAB_GROUP_FILE"))
     exclude = parse_patterns(os.getenv("GITLAB_GROUP_EXCLUDE"))
 
@@ -182,7 +184,8 @@ if __name__ == '__main__':
     gl = get_gitlab_client(gitlab_url, gitlab_token, os.getenv("GITLAB_CA_BUNDLE"))
 
     try:
-        code = import_batches(api, gl, include, exclude, auth_code, dry_run, batch_size, deadline_hours)
+        code = import_batches(api, gl, include, exclude, auth_code, dry_run, batch_size, deadline_hours,
+                              scan_after_import)
     except Exception as e:
         logger.exception(f"unexpected error: {e}")
         code = 2 if is_permanent_error(e) else 1

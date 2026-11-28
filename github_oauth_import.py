@@ -32,6 +32,7 @@ def run() -> int:
     dry_run = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
     batch_size = int(os.getenv("BATCH_SIZE", "200"))
     deadline_hours = float(os.getenv("IMPORT_DEADLINE_HOURS", "48"))
+    scan_after_import = os.getenv("SCAN_AFTER_IMPORT", "").lower() in ("1", "true", "yes")
     include = parse_patterns(os.getenv("GITHUB_REPO_INCLUDE"), os.getenv("GITHUB_REPO_FILE"))
     exclude = parse_patterns(os.getenv("GITHUB_REPO_EXCLUDE"))
 
@@ -66,7 +67,8 @@ def run() -> int:
             update_existing=False,
             existing=existing,
             origin="GITHUB", organization=github_org,
-            is_user=False, is_org_webhook_enabled=False, create_ast_project=True, scan_ast_project=False,
+            is_user=False, is_org_webhook_enabled=False, create_ast_project=True,
+            scan_ast_project=scan_after_import,
             auth_code=auth_code,
             webhook_enabled=False, pr_decoration_enabled=False, sca_auto_pr_enabled=False,
             chunk_size=batch_size,

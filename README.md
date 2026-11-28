@@ -40,6 +40,7 @@ Optional (same semantics as the GitLab script):
     * GITHUB_REPO_INCLUDE / GITHUB_REPO_EXCLUDE: comma separated "org/repo" patterns (wildcards ok),
       exclude wins over include; GITHUB_REPO_FILE adds one include pattern per line
     * BATCH_SIZE: repos per import batch (default 200)
+    * SCAN_AFTER_IMPORT: `true` triggers an initial AST scan of each imported repo (default: no scan)
     * DRY_RUN: `true` only reports what would be imported, nothing is changed
     * IMPORT_DEADLINE_HOURS: how long failed repos are retried (default 48)
 
@@ -63,6 +64,7 @@ Optional:
     * GITLAB_GROUP_EXCLUDE: comma separated path patterns, matching groups/projects are skipped (exclude wins over include)
     * GITLAB_GROUP_FILE: file with one include pattern per line (`#` comments allowed), added to GITLAB_GROUP_INCLUDE
     * BATCH_SIZE: repos per import batch (default 200)
+    * SCAN_AFTER_IMPORT: `true` triggers an initial AST scan of each imported repo (default: no scan)
     * DRY_RUN: `true` only reports what would be imported, nothing is changed
     * IMPORT_DEADLINE_HOURS: how long failed repos are retried (default 48)
 
