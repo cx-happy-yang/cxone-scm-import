@@ -45,13 +45,12 @@ Required:
 Optional:
     * CXONE_GITLAB_INSTANCE_NAME (recommended): instance name of the GitLab SCM in CxOne, for example gitlab_20261126. Without it the SCM is matched by GITLAB_URL, which fails if zero or several SCMs match (for example a stale one whose tunnel was removed)
     * GITLAB_CA_BUNDLE: path to a CA certificate file (.pem) if your GitLab uses a self-signed or internal CA. TLS verification is never disabled
-    * GITLAB_GROUP: comma separated top-level group paths or ids. If unset, every top-level group the token can see is imported
     * GITLAB_GROUP_INCLUDE: comma separated path patterns, only matching groups/projects are imported
     * GITLAB_GROUP_EXCLUDE: comma separated path patterns, matching groups/projects are skipped (exclude wins over include)
     * GITLAB_GROUP_FILE: file with one include pattern per line (`#` comments allowed), added to GITLAB_GROUP_INCLUDE
+    * BATCH_SIZE: repos per import batch (default 200)
     * DRY_RUN: `true` only reports what would be imported, nothing is changed
-    * IMPORT_STATE_FILE: state file for resume and retry (default `./gitlab_import_state.json`)
-    * IMPORT_DEADLINE_HOURS: how long failed groups are retried (default 48)
+    * IMPORT_DEADLINE_HOURS: how long failed repos are retried (default 48)
 
 Find the auth codes in the CxOne Portal developer tools (network tab) while connecting to the SCM.
 
@@ -84,13 +83,21 @@ Patterns match the full path of a group or project and support `*`. A pattern al
 
 Subgroups are imported together with their top-level group. The CxOne project name is the full path (`group/subgroup/project`). Archived projects and projects without commits yet are skipped.
 
-#### Large instances, resume and retry
-The groups are imported one after another (CxOne imports must not run in parallel). After every group the progress is written to the state file (`pending`, `in_progress`, `done` or `failed`, with attempts and the last error).
-* If the script is killed, run it again: finished groups are skipped. A group that was cut off mid-import is detected, the script waits until CxOne reports its import job at 100%, and then runs that group again. Repos that already exist in CxOne are always skipped.
-* A failed group is retried with growing waits (5 min, 10 min, ... up to 1 hour) until everything is done or `IMPORT_DEADLINE_HOURS` has passed. Then the script exits with code 1 and the state file lists what is left. Restarting gives a fresh deadline.
-* A failed import can leave a CxOne job still running, and CxOne rejects a new import while one runs. Before the next group (and before the first one) the script therefore waits until CxOne reports its import job as finished; before a retry it also refreshes the CxOne project list, so repos created by the failed attempt are skipped instead of imported again.
-* Credential errors (401, 403, `Failed to load access token`, for example an expired auth code) are not retried. The script exits with code 2 and keeps the state: put a new `CXONE_GITLAB_AUTH_CODE` in the env file and run it again to resume.
-* To start over, delete the state file.
+#### How the import works
+All GitLab projects are listed in one paginated pass, then the new ones are imported in sequential
+batches of `BATCH_SIZE` (200). The import POST completes synchronously: its response carries the
+final per-repo results (`SUCCESS` / error with message), so a batch that returns has finished -
+CxOne never runs two import jobs at the same time, and there is no job-status polling.
+
+* Repos already in CxOne are always skipped. Repos whose import failed are retried in the next
+  batch with growing waits (5 min, 10 min, ... up to 1 hour) until everything is done or
+  `IMPORT_DEADLINE_HOURS` has passed. Then the script exits with code 1 and lists what is left.
+* Credential errors (401, 403, `Failed to load access token`, for example an expired auth code)
+  are not retried. The script exits with code 2: put a new `CXONE_GITLAB_AUTH_CODE` in the env
+  file and run it again to resume.
+* A restart is safe without any state file: the script re-lists GitLab, skips whatever already
+  exists in CxOne, and re-imports only what is missing (the server also ignores repos that were
+  already imported).
 
 ## Two ways to import
 1. using the documented REST API : [/api/repos-manager/scm-projects](https://checkmarx.stoplight.io/docs/checkmarx-one-api-reference-guide/branches/main/5yefdw9pm675i-import-code-repository)

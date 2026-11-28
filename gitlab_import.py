@@ -1,27 +1,28 @@
-"""Import the projects of self-hosted GitLab groups (including subgroups) into CxOne.
+"""Import all projects of a self-hosted GitLab instance (any groups) into CxOne.
 
 Required env vars: GITLAB_URL, GITLAB_TOKEN, CXONE_GITLAB_AUTH_CODE (+ the usual CXONE_* settings).
 Optional env vars:
-    GITLAB_GROUP             comma separated top-level group paths or ids; default: every top-level group the token sees
-    GITLAB_GROUP_INCLUDE     comma separated path patterns (wildcards ok); only matching groups/projects are imported
-    GITLAB_GROUP_EXCLUDE     comma separated path patterns; matching groups/projects are skipped (wins over include)
+    GITLAB_GROUP_INCLUDE     comma separated path patterns (wildcards ok); only matching projects are imported
+    GITLAB_GROUP_EXCLUDE     comma separated path patterns; matching projects are skipped (wins over include)
     GITLAB_GROUP_FILE        file with one include pattern per line (# comments allowed), added to GITLAB_GROUP_INCLUDE
+    BATCH_SIZE               repos per import batch (default 200)
     DRY_RUN                  true: only report what would be imported, change nothing
-    IMPORT_STATE_FILE        resume/retry state file (default ./gitlab_import_state.json)
-    IMPORT_DEADLINE_HOURS    keep retrying failed groups for this long (default 240)
+    IMPORT_DEADLINE_HOURS    keep retrying failed repos for this long (default 48)
     CXONE_GITLAB_INSTANCE_NAME, GITLAB_CA_BUNDLE   see README
+
+The import POST completes synchronously: the response carries the final per-repo results
+(status, projectId, statusMessageError), so batches run strictly one after another and a
+restart simply re-lists and skips whatever already exists in CxOne. No state file needed.
 """
 import os
 import time
-from fnmatch import fnmatchcase
-from typing import Callable, List, Optional
+from typing import List, Optional
 from urllib.parse import urlparse
 
 import gitlab
 from CheckmarxPythonSDK.CxOne import RepoManagerAPI
 
-from import_state import ImportState, PermanentImportError, run_until_done
-from scm_common import get_existing_projects, import_new_repos, logger, require_env
+from scm_common import get_existing_projects, logger, require_env
 
 
 # ---------- GitLab access ----------
@@ -29,15 +30,6 @@ from scm_common import get_existing_projects, import_new_repos, logger, require_
 def get_gitlab_client(gitlab_url: str, access_token: str, ca_bundle: str = None) -> gitlab.Gitlab:
     """ca_bundle: optional path to a CA certificate file, for instances with a self-signed/internal CA."""
     return gitlab.Gitlab(gitlab_url, private_token=access_token, ssl_verify=ca_bundle or True)
-
-
-def get_all_top_level_groups(gl: gitlab.Gitlab) -> List[str]:
-    """Full paths of all top-level groups the token can see (their subgroups come with include_subgroups)."""
-    return [group.full_path for group in gl.groups.list(top_level_only=True, iterator=True)]
-
-
-def get_gitlab_projects_by_group(gl: gitlab.Gitlab, group: str):
-    return gl.groups.get(group).projects.list(include_subgroups=True, iterator=True)
 
 
 def to_cxone_repo(project) -> dict:
@@ -55,6 +47,19 @@ def to_cxone_repo(project) -> dict:
     }
 
 
+def list_all_projects(gl: gitlab.Gitlab, attempts: int = 3) -> list:
+    """All projects the token can see, in one paginated pass; transient GitLab errors are retried."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return list(gl.projects.list(iterator=True))
+        except Exception as e:
+            if attempt == attempts or isinstance(e, gitlab.exceptions.GitlabAuthenticationError):
+                raise
+            logger.warning(f"project listing failed ({type(e).__name__}: {e}), retry {attempt}/{attempts - 1}")
+            time.sleep(30)
+    return []  # unreachable
+
+
 # ---------- include / exclude filters ----------
 
 def parse_patterns(value: Optional[str] = None, file_path: Optional[str] = None) -> List[str]:
@@ -68,6 +73,7 @@ def parse_patterns(value: Optional[str] = None, file_path: Optional[str] = None)
 def _matches(path: str, pattern: str) -> bool:
     """True if pattern matches the path or one of its ancestor groups (so "team" covers "team/sub/repo")."""
     parts = path.split("/")
+    from fnmatch import fnmatchcase
     return any(fnmatchcase("/".join(parts[:i]), pattern) for i in range(1, len(parts) + 1))
 
 
@@ -75,29 +81,6 @@ def is_selected(path: str, include: List[str], exclude: List[str]) -> bool:
     if any(_matches(path, p) for p in exclude):
         return False
     return not include or any(_matches(path, p) for p in include)
-
-
-def group_may_match(group: str, include: List[str], exclude: List[str]) -> bool:
-    """Cheap pre-check on a top-level group, so whole groups can be skipped without listing their projects."""
-    if any(fnmatchcase(group, p) for p in exclude):
-        return False
-    # an include like "team/sub/*" must still open group "team"; compare against the pattern's first segment
-    return not include or any(fnmatchcase(group, p.split("/")[0]) for p in include)
-
-
-def collect_repos(projects, selected: Callable[[str], bool] = lambda path: True) -> List[dict]:
-    repos = []
-    for project in projects:
-        path = project.path_with_namespace
-        if getattr(project, "archived", False):
-            logger.info(f"skip archived project {path}")
-        elif getattr(project, "empty_repo", False) or not project.default_branch:
-            logger.info(f"skip empty project {path} (no commits yet)")
-        elif not selected(path):
-            logger.info(f"skip project {path} (excluded by include/exclude filter)")
-        else:
-            repos.append(to_cxone_repo(project))
-    return repos
 
 
 # ---------- CxOne SCM ----------
@@ -138,7 +121,7 @@ def register_self_hosted_gitlab(api: RepoManagerAPI, gitlab_url: str, instance_n
 # ---------- errors ----------
 
 def is_permanent_error(exc: Exception) -> bool:
-    """Errors that retrying cannot fix: bad/expired credentials. Stop and let the user fix them, state is kept."""
+    """Errors that retrying cannot fix: bad/expired credentials. Stop and let the user fix them."""
     if isinstance(exc, gitlab.exceptions.GitlabAuthenticationError):
         return True
     text = str(exc)
@@ -147,77 +130,101 @@ def is_permanent_error(exc: Exception) -> bool:
 
 # ---------- main flow ----------
 
-def wait_for_cxone_idle(api: RepoManagerAPI, max_wait: float = 7200, interval: float = 30,
-                        none_tolerance: int = 3, sleep=time.sleep, now=time.monotonic) -> None:
-    """Block until the CxOne import job reports 100%, so a submit never races a job that is still importing.
+def chunked(items: list, size: int):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
 
-    The percentage is the only signal the job-status stream offers. A poll that returns nothing (None) is
-    ambiguous: no job may be running, or a job may not have reported yet. After none_tolerance consecutive
-    empty polls a running job would have reported, so the wait gives up and assumes CxOne is idle; if that
-    is wrong, the next import fails and is retried with backoff, so nothing is lost.
+
+def import_batches(api, gl, include, exclude, auth_code, dry_run, batch_size, deadline_hours) -> int:
+    """List everything once, then import new repos in synchronous batches of batch_size.
+
+    Returns the process exit code: 0 all imported, 1 deadline reached / unexpected error, 2 permanent error.
     """
-    deadline = now() + max_wait
-    none_streak = 0
-    while True:
-        try:
-            percentage = api.get_job_status()
-        except Exception as e:
-            logger.info(f"cannot read cxone job status ({type(e).__name__}), will check again")
-            percentage = None
-        if percentage is not None and percentage >= 100:
-            logger.info("cxone import job status: 100%, CxOne is idle")
-            return
-        if percentage is None:
-            none_streak += 1
-            if none_streak >= none_tolerance:
-                logger.info(f"cxone job status carried no percentage for {none_streak} polls, assuming CxOne is idle")
-                return
+    # -- discovery (one paginated pass over all projects, then filter) --
+    projects = list_all_projects(gl)
+    repos = []
+    for p in projects:
+        path = p.path_with_namespace
+        if getattr(p, "archived", False):
+            logger.info(f"skip archived project {path}")
+        elif getattr(p, "empty_repo", False) or not p.default_branch:
+            logger.info(f"skip empty project {path} (no commits yet)")
+        elif not is_selected(path, include, exclude):
+            logger.info(f"skip project {path} (excluded by include/exclude filter)")
         else:
-            none_streak = 0
-            logger.info(f"cxone import job status: {percentage}%")
-        if now() >= deadline:
-            logger.warning(f"cxone import job did not report 100% within {max_wait}s, continuing anyway")
-            return
-        sleep(interval)
+            repos.append(to_cxone_repo(p))
+    logger.info(f"{len(projects)} project(s) on GitLab, {len(repos)} importable after filters")
 
+    existing = get_existing_projects()
+    pending = [r for r in repos if r["fullName"] not in existing]
+    logger.info(f"{len(pending)} new repo(s) to import "
+                f"in {max(1, -(-len(pending) // batch_size))} batch(es) of {batch_size}")
 
-def select_groups(gl, explicit: List[str], include: List[str], exclude: List[str]) -> List[str]:
-    groups = explicit or get_all_top_level_groups(gl)
-    kept = [g for g in groups if group_may_match(g, include, exclude)]
-    logger.info(f"{len(groups)} top-level group(s), {len(kept)} after include/exclude filter")
-    return kept
-
-
-def import_group(gl, api, group, existing, include, exclude, auth_code, dry_run=False) -> dict:
-    repos = collect_repos(
-        get_gitlab_projects_by_group(gl, group), selected=lambda path: is_selected(path, include, exclude)
-    )
-    new = [r for r in repos if r["fullName"] not in existing]
-    logger.info(f"group {group}: {len(repos)} importable project(s), {len(new)} new")
     if dry_run:
-        for r in new:
+        logger.info("DRY_RUN: nothing is imported")
+        for r in pending:
             logger.info(f"  would import {r['fullName']}")
-        return {"importable": len(repos), "new": len(new)}
-    import_new_repos(
-        repos,
-        import_fn=api.batch_import_repo,
-        update_existing=False,
-        existing=existing,
-        origin="GITLAB",
-        organization=group,
-        is_user=False,
-        is_org_webhook_enabled=False,
-        create_ast_project=True,
-        scan_ast_project=False,
-        auth_code=auth_code,
-        webhook_enabled=False,
-        pr_decoration_enabled=False,
-        sca_auto_pr_enabled=False,
-        chunk_size=200,
-        delay_request_timeout=10,
-    )
-    existing.update({r["fullName"]: None for r in new})
-    return {"importable": len(repos), "new": len(new)}
+        return 0
+
+    # -- batched import with retry of genuinely failed repos --
+    deadline = time.time() + deadline_hours * 3600
+    attempt = 0
+    while pending:
+        attempt += 1
+        still_failed: List[dict] = []
+        for batch in chunked(pending, batch_size):
+            organization = batch[0]["fullName"].split("/")[0]
+            try:
+                results = api.batch_import_repo(
+                    repos=batch,
+                    origin="GITLAB",
+                    organization=organization,
+                    auth_code=auth_code,
+                    existing_project_names=existing.keys(),
+                    is_user=False,
+                    is_org_webhook_enabled=False,
+                    create_ast_project=True,
+                    scan_ast_project=False,
+                    webhook_enabled=False,
+                    pr_decoration_enabled=False,
+                    sca_auto_pr_enabled=False,
+                    chunk_size=batch_size,
+                    delay_request_timeout=10,
+                )
+            except Exception as e:
+                if is_permanent_error(e):
+                    logger.error(f"stopped, fix the cause and run again to resume: {e}")
+                    return 2
+                logger.exception(f"batch POST failed, its repos will be retried")
+                still_failed.extend(batch)
+                continue
+            # results is None only when the server answered async and the SDK polled the job instead
+            if results is None:
+                existing.update({r["fullName"]: None for r in batch})
+                continue
+            by_name = {r.get("name"): r for r in results}
+            for repo in batch:
+                name = repo["fullName"]
+                res = by_name.get(name) or {}
+                error = res.get("statusMessageError") or ""
+                if res.get("status") == "SUCCESS" or "already imported" in error:
+                    existing[name] = None
+                else:
+                    logger.warning(f"{name}: {res.get('status')} - {error}")
+                    still_failed.append(repo)
+        if not still_failed:
+            logger.info("all repos imported")
+            return 0
+        pending = still_failed
+        if time.time() >= deadline:
+            break
+        wait = min(3600, 300 * 2 ** max(attempt - 1, 0))  # 5 min doubling, cap 1 hour
+        logger.info(f"{len(pending)} repo(s) still failing, retrying in {wait:.0f}s")
+        time.sleep(wait)
+
+    logger.error(f"deadline reached, {len(pending)} repo(s) not imported: "
+                 f"{[r['fullName'] for r in pending]}")
+    return 1
 
 
 if __name__ == '__main__':
@@ -225,67 +232,18 @@ if __name__ == '__main__':
     gitlab_token = require_env("GITLAB_TOKEN")
     auth_code = require_env("CXONE_GITLAB_AUTH_CODE")
     dry_run = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
-    state_file = os.getenv("IMPORT_STATE_FILE", "./gitlab_import_state.json")
-    deadline_hours = float(os.getenv("IMPORT_DEADLINE_HOURS", "240"))
+    batch_size = int(os.getenv("BATCH_SIZE", "200"))
+    deadline_hours = float(os.getenv("IMPORT_DEADLINE_HOURS", "48"))
     include = parse_patterns(os.getenv("GITLAB_GROUP_INCLUDE"), os.getenv("GITLAB_GROUP_FILE"))
     exclude = parse_patterns(os.getenv("GITLAB_GROUP_EXCLUDE"))
-    explicit_groups = parse_patterns(os.getenv("GITLAB_GROUP"))
 
     api = RepoManagerAPI()
     register_self_hosted_gitlab(api, gitlab_url, os.getenv("CXONE_GITLAB_INSTANCE_NAME"))
     gl = get_gitlab_client(gitlab_url, gitlab_token, os.getenv("GITLAB_CA_BUNDLE"))
-    groups = select_groups(gl, explicit_groups, include, exclude)
-    existing = get_existing_projects()  # loaded once, refreshed before retries
-
-    if dry_run:
-        logger.info("DRY_RUN: nothing is imported and the state file is not touched")
-        totals = {"importable": 0, "new": 0}
-        for group in groups:
-            for k, v in import_group(gl, api, group, existing, include, exclude, auth_code, dry_run=True).items():
-                totals[k] += v
-        logger.info(f"DRY_RUN summary: {len(groups)} group(s), {totals['importable']} importable project(s), "
-                    f"{totals['new']} would be imported")
-        raise SystemExit(0)
-
-    state = ImportState(state_file)
-    # A failed import can leave a CxOne job still running, and CxOne rejects a new import while one runs,
-    # so the next submit must wait until the job reports 100%. guard remembers that a wait is owed.
-    guard = {"dirty": True}
-    # A group cut off mid-import may have created some projects already; refresh the project list before
-    # retrying it, so those repos are skipped instead of being imported a second time.
-    interrupted = {"refresh": False}
-
-    def on_interrupted(group: str) -> None:
-        interrupted["refresh"] = True
-        wait_for_cxone_idle(api)
-        guard["dirty"] = False  # the wait above already covered it
-
-    def process(group: str) -> dict:
-        if guard["dirty"]:
-            wait_for_cxone_idle(api)
-            guard["dirty"] = False
-        if interrupted["refresh"] or state.units[group]["attempts"] > 0:
-            interrupted["refresh"] = False
-            logger.info(f"retrying {group}: refreshing the CxOne project list so repos created "
-                        f"by the failed attempt are skipped")
-            existing.update(get_existing_projects())
-        try:
-            return import_group(gl, api, group, existing, include, exclude, auth_code)
-        except Exception:
-            guard["dirty"] = True  # the job may still be running; wait before the next group
-            raise
 
     try:
-        finished = run_until_done(
-            groups, process, state, deadline_seconds=deadline_hours * 3600, is_permanent=is_permanent_error,
-            on_interrupted=on_interrupted,
-        )
-    except PermanentImportError as e:
-        logger.error(f"stopped, fix the cause and run again to resume (state: {state_file}): {e}")
-        raise SystemExit(2)
-    summary = state.summary(groups)
-    logger.info(f"finished: {summary}")
-    if not finished:
-        unfinished = state.unfinished(groups)
-        logger.error(f"deadline reached, {len(unfinished)} group(s) not done, see {state_file}: {unfinished}")
-        raise SystemExit(1)
+        code = import_batches(api, gl, include, exclude, auth_code, dry_run, batch_size, deadline_hours)
+    except Exception as e:
+        logger.exception(f"unexpected error: {e}")
+        code = 2 if is_permanent_error(e) else 1
+    raise SystemExit(code)

@@ -102,7 +102,8 @@ def run_until_done(
     retry_max: float = 3600,
     on_interrupted: Callable[[str], None] = lambda key: None,
 ) -> bool:
-    """Process every unit once, then retry the failed ones with backoff until all are done or the deadline passes.
+    """Process the units one after another; a failed unit is retried with growing backoff once its
+    retry time is due, until all are done or the deadline passes.
 
     process(key) returns an optional dict stored with the unit; it raises on failure.
     A unit found in_progress at the start was cut off by a crash or kill of an earlier run; on_interrupted(key) is
@@ -120,25 +121,23 @@ def run_until_done(
             logger.info(f"waiting {wait:.0f}s before retrying {len(state.unfinished(keys))} failed unit(s)")
             sleep(wait)
             continue
-        for key in due:
-            if now() >= deadline:
-                break
-            done_so_far = state.summary(keys)[DONE]
-            logger.info(f"[{done_so_far + 1}/{total}] {key}")
-            if state.status(key) == IN_PROGRESS:
-                logger.warning(f"{key} was interrupted by an earlier run, checking before starting it again")
-                on_interrupted(key)
-            state.mark_in_progress(key)
-            try:
-                info = process(key) or {}
-            except Exception as e:
-                permanent = is_permanent(e)
-                attempts = state.units[key]["attempts"] + 1
-                retry_in = None if permanent else backoff_seconds(attempts, retry_initial, retry_max)
-                state.mark_failed(key, f"{type(e).__name__}: {e}", retry_in, now())
-                if permanent:
-                    raise PermanentImportError(f"{key}: {e}") from e
-                logger.exception(f"{key} failed (attempt {attempts}), retry in {retry_in:.0f}s")
-            else:
-                state.mark_done(key, **info)
+        key = due[0]
+        done_so_far = state.summary(keys)[DONE]
+        logger.info(f"[{done_so_far + 1}/{total}] {key}")
+        if state.status(key) == IN_PROGRESS:
+            logger.warning(f"{key} was interrupted by an earlier run, checking before starting it again")
+            on_interrupted(key)
+        state.mark_in_progress(key)
+        try:
+            info = process(key) or {}
+        except Exception as e:
+            permanent = is_permanent(e)
+            attempts = state.units[key]["attempts"] + 1
+            retry_in = None if permanent else backoff_seconds(attempts, retry_initial, retry_max)
+            state.mark_failed(key, f"{type(e).__name__}: {e}", retry_in, now())
+            if permanent:
+                raise PermanentImportError(f"{key}: {e}") from e
+            logger.exception(f"{key} failed (attempt {attempts}), retry in {retry_in:.0f}s")
+        else:
+            state.mark_done(key, **info)
     return not state.unfinished(keys)
