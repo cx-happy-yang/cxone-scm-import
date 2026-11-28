@@ -4,3 +4,4 @@
 __pycache__/
 gitlab_import_state.json
 *.tmp
+*.log
